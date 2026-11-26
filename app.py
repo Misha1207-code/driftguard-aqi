@@ -4,6 +4,7 @@ import threading
 import time
 
 from fastapi import FastAPI, HTTPException, Response
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, generate_latest
 
@@ -57,6 +58,11 @@ def start_auto():
 
 class PredictIn(BaseModel):
     features: dict
+
+
+@app.get("/", include_in_schema=False)
+def home():
+    return FileResponse(os.path.join(os.path.dirname(os.path.abspath(__file__)), "dashboard.html"))
 
 
 @app.get("/health")

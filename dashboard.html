@@ -1,0 +1,65 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>DriftGuard-AQI Dashboard</title>
+<style>
+:root{--bg:#f6f4ee;--fg:#14232b;--mut:#5c6a70;--card:#fff;--line:#d9d6cc;--acc:#e07a2f;--blue:#2a7f9e;--grn:#2e9e5b;--red:#d64545;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#10181c;--fg:#eef1ee;--mut:#9fb3ba;--card:#18242a;--line:#2b3b43;color-scheme:dark}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.45 Arial,Helvetica,sans-serif;padding:16px;max-width:980px;margin:auto}
+h1{font:700 26px Georgia,serif;margin:4px 0}h2{font-size:15px;margin:0 0 8px;color:var(--acc)}
+.tag{display:inline-block;background:var(--card);border:1px solid var(--line);border-radius:99px;padding:2px 10px;font-size:12px;color:var(--mut)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;margin-top:12px}
+.row{display:flex;gap:12px;flex-wrap:wrap}.row>*{flex:1 1 280px}
+.kpi{display:flex;gap:8px;flex-wrap:wrap}.kpi div{flex:1 1 90px;text-align:center;background:var(--bg);border-radius:8px;padding:8px}.kpi b{display:block;font-size:22px}
+button{background:var(--acc);color:#fff;border:0;border-radius:8px;padding:8px 14px;font-size:14px;cursor:pointer;margin-right:6px}button.s{background:var(--blue)}
+.bar{display:flex;align-items:center;gap:8px;margin:5px 0}.bar span{width:92px;font-size:13px}.bar i{flex:1;height:12px;background:var(--bg);border-radius:6px;position:relative;overflow:hidden}.bar u{position:absolute;left:0;top:0;bottom:0;background:var(--blue)}.bar em{width:36px;font-style:normal;font-size:13px;text-align:right}
+.tau{position:absolute;top:0;bottom:0;width:2px;background:var(--red)}
+table{width:100%;border-collapse:collapse;font-size:14px}td,th{padding:6px 8px;border-bottom:1px solid var(--line);text-align:left}tr.me{font-weight:700;color:var(--acc)}
+.sc{overflow-x:auto}#log{max-height:230px;overflow:auto;font-size:13px}#log p{margin:0 0 6px;padding:6px 8px;border-left:3px solid var(--line);background:var(--bg)}
+#log p.g{border-color:var(--grn)}#log p.r{border-color:var(--red)}
+svg text{fill:var(--mut);font-size:11px}
+</style></head><body>
+<h1>DriftGuard-AQI</h1>
+<span class="tag">Live: calls the running FastAPI service</span> <span class="tag">Synthetic demo data</span> <a class="tag" href="/docs" style="color:var(--blue)">API docs</a> <a class="tag" href="/metrics">Prometheus metrics</a> <span class="tag">Dehradun-style winter peaks</span>
+<div class="card"><h2>Live stream: each tick calls POST /simulate/step</h2>
+<button id="play">Play</button><button class="s" id="step">Step</button><button class="s" id="all">Show all</button><button class="s" id="rst">Reset</button>
+<div class="kpi" style="margin-top:10px"><div><b id="k1">0</b>week</div><div><b id="k2">1</b>champion version</div><div><b id="k3">0</b>retrains triggered</div><div><b id="k4" style="color:var(--grn)">0</b>promoted</div><div><b id="k5" style="color:var(--red)">0</b>rejected by gate</div></div></div>
+<div class="card"><h2>Rolling RMSE (4 weeks): lower is better</h2><div class="sc"><svg id="chart" viewBox="0 0 800 300" width="100%"></svg></div>
+<span class="tag" style="color:#8a8a8a">Never retrain</span> <span class="tag" style="color:var(--blue)">Monthly schedule</span> <span class="tag" style="color:var(--acc)">DriftGuard</span> <span class="tag">green ▲ promoted, red ✕ rejected, dashed = injected shift</span></div>
+<div class="row"><div class="card"><h2>Monitoring signals this week (0 to 1)</h2><div id="bars"></div><p style="color:var(--mut);font-size:12px;margin:6px 0 0">Red line = retrain threshold. Seasonal match lowers the score.</p></div>
+<div class="card"><h2>Decision log (reason for every decision)</h2><div id="log"><p>Press Play to start.</p></div></div></div>
+<div class="card"><h2>Policy comparison (full run)</h2><div class="sc"><table id="tb"></table></div>
+<p style="color:var(--mut);font-size:12px">Unneeded = retrains where the new model was not better than the current one. On this synthetic data the 12-month schedule was slightly better; DriftGuard matches weekly and monthly accuracy with far fewer retrains.</p></div>
+<script>const D={"never":[15.06,8.34,15.65,12.95,10.22,15.58,15.78,8.84,20.16,14.43,23.0,11.55,14.0,16.89,19.62,16.01,16.42,12.43,21.67,19.06,14.28,14.41,11.39,8.47,28.23,14.99,9.52,15.55,5.07,8.51,20.16,14.02,7.01,19.01,8.65,14.41,18.68,9.45,13.7,11.66,10.84,21.28,14.51,16.4,13.83,9.62,10.74,13.31,11.27,17.59,18.26,11.98,13.95,10.73,9.47,7.5,12.72,10.65,17.18,10.09,13.81,18.71,17.94,10.8,12.91,15.4,12.63,12.58,13.72,37.66,18.7,14.74,12.56,20.12,13.8,21.04,12.86,16.99,16.01,12.66,19.05,21.11,17.31,18.28,13.71,13.58,41.65,45.26,49.64,37.12,34.83,50.91,34.68,31.0,33.36,27.78,47.19,30.43,25.29,29.64,14.39,18.44,17.66,18.41,13.53,21.69,20.74,30.84,29.03,30.48,32.19,22.97,24.59,36.88,21.58,31.61,24.17,22.5,25.39,43.77,40.18,71.21,70.31,35.9,27.48,25.28,36.69,49.28,46.23,33.87,44.54,49.59,38.76,41.71,43.59,29.86,28.34,41.26,47.52,38.89,41.2,32.24,41.89,40.42,47.21,36.64,25.28,27.17,29.85,39.23,39.62],"monthly":[15.06,8.34,15.65,12.95,10.22,17.86,15.51,8.78,19.54,15.79,21.67,11.15,13.94,17.38,22.94,13.63,23.82,24.94,21.05,25.48,13.46,13.81,10.95,12.47,29.72,12.2,10.64,15.75,8.52,8.65,19.54,14.31,9.7,17.91,8.16,15.66,21.17,8.8,11.62,18.58,12.34,19.07,14.01,20.52,13.77,12.44,10.67,11.79,8.05,18.82,15.71,11.67,14.38,7.86,10.71,8.33,16.34,11.25,10.34,9.61,13.42,16.67,14.52,9.75,15.26,17.5,8.23,15.84,19.3,55.71,33.5,13.05,11.14,19.14,15.8,27.48,16.18,19.34,15.1,12.96,20.49,19.0,13.08,21.64,14.85,13.64,46.61,52.13,38.51,38.25,38.77,54.22,38.44,26.52,33.01,26.11,58.45,37.85,31.61,23.04,12.19,20.65,19.7,19.91,15.81,22.87,21.91,31.47,20.15,18.59,22.14,13.11,21.17,23.83,21.81,25.85,18.12,15.31,23.84,27.77,17.17,46.08,48.22,27.18,23.77,20.12,28.3,36.78,28.84,20.34,29.83,26.29,14.86,23.19,9.55,17.28,14.16,17.77,17.8,14.83,23.74,21.92,12.65,15.92,22.74,14.44,11.57,22.31,10.12,27.51,28.33],"events":[[57,"sensor drift"],[86,"concept drift"]],"summary":[["Never",0,0,26.63],["Weekly",150,82,22.06],["Monthly",37,16,22.23],["12-month",2,1,21.66],["Drift-only",37,14,22.87],["Error-only",5,2,23.6],["DriftGuard (no gate)",4,3,26.91],["DriftGuard",8,4,22.1]],"tau":0.35};const $=s=>document.querySelector(s);const n=D.never.length;
+let rows=[],rm=[],tm=null,busy=false,ver=1,c=[0,0,0],ent=[];
+const roll=a=>a.map((_,j)=>{const s=a.slice(Math.max(0,j-3),j+1);return s.reduce((x,y)=>x+y,0)/s.length});
+const RN=roll(D.never),RM=roll(D.monthly),mx=Math.max(...RN,...RM)*1.15;
+const X=j=>40+j*750/(n-1),Y=v=>270-Math.min(v,mx)/mx*250;
+const P=a=>a.map((v,j)=>(j?'L':'M')+X(j).toFixed(1)+' '+Y(v).toFixed(1)).join('');
+function draw(){const i=rows.length-1,d=roll(rm);let s='<line x1="40" y1="270" x2="790" y2="270" stroke="#999"/>';
+for(let k=0;k<=4;k++){const v=mx*k/4;s+=`<text x="4" y="${Y(v)+4}">${v.toFixed(0)}</text>`}
+D.events.forEach(e=>{s+=`<line x1="${X(e[0])}" y1="20" x2="${X(e[0])}" y2="270" stroke="#d64545" stroke-dasharray="4"/><text x="${X(e[0])+3}" y="30">${e[1]}</text>`});
+if(i>=0){s+=`<path d="${P(RN.slice(0,i+1))}" fill="none" stroke="#8a8a8a" stroke-width="1.5"/><path d="${P(RM.slice(0,i+1))}" fill="none" stroke="#2a7f9e" stroke-width="1.5"/><path d="${P(d)}" fill="none" stroke="#e07a2f" stroke-width="3"/>`;
+for(let j=0;j<=i;j++){const t=rows[j][5];if(t)s+=`<text x="${X(j)-5}" y="${Y(d[j])-6}" style="fill:${t==1?'#2e9e5b':'#d64545'};font-size:14px">${t==1?'▲':'✕'}</text>`}}
+$('#chart').innerHTML=s}
+function bars(){const r=rows.length?rows[rows.length-1]:[0,0,0,0,0],L=['Data drift','Error rise','Interval warning','Seasonal match','Retrain score'];
+$('#bars').innerHTML=L.map((l,k)=>`<div class="bar"><span>${l}</span><i><u style="width:${r[k]*100}%;${k==4?'background:var(--acc)':''}"></u>${k==4?`<b class="tau" style="left:${D.tau*100}%"></b>`:''}</i><em>${r[k].toFixed(2)}</em></div>`).join('')}
+function kp(){$('#k1').textContent=rows.length;$('#k2').textContent=ver;$('#k3').textContent=c[0];$('#k4').textContent=c[1];$('#k5').textContent=c[2]}
+function clear(){stop();rows=[];rm=[];c=[0,0,0];ver=1;ent=[];$('#log').innerHTML='<p>Press Play to start.</p>';kp();draw();bars()}
+async function step(){if(busy)return false;busy=true;try{
+const r=await(await fetch('/simulate/step',{method:'POST'})).json();
+if(r.week===0&&rows.length)clear();
+const t=r.triggered?(r.promoted?1:2):0;
+rows.push([r.D,r.E,r.U,r.S,r.score,t]);rm.push(r.weekly_rmse);
+if(t){c[0]++;t==1?c[1]++:c[2]++}ver=r.version;
+ent.unshift(`<p class="${t==1?'g':t==2?'r':''}"><b>${r.date}</b> ${r.reason}</p>`);
+$('#log').innerHTML=ent.slice(0,40).join('');kp();draw();bars();
+if(rows.length>=n)stop();return true}
+catch(e){stop();$('#log').innerHTML='<p class="r">Cannot reach the API: '+e+'</p>';return false}finally{busy=false}}
+function stop(){clearInterval(tm);tm=null;$('#play').textContent='Play'}
+$('#play').onclick=()=>{if(tm)return stop();$('#play').textContent='Pause';tm=setInterval(step,300)};
+$('#step').onclick=()=>{stop();step()};
+$('#all').onclick=async()=>{stop();let ok;do{ok=await step()}while(ok&&rows.length<n)};
+$('#rst').onclick=async()=>{await fetch('/simulate/reset',{method:'POST'});clear()};
+$('#tb').innerHTML='<tr><th>Policy</th><th>Retrains</th><th>Unneeded</th><th>RMSE</th></tr>'+D.summary.map(r=>`<tr class="${r[0]=='DriftGuard'?'me':''}"><td>${r[0]}</td><td>${r[1]}</td><td>${r[2]}</td><td>${r[3].toFixed(2)}</td></tr>`).join('');
+draw();bars();
+</script></body></html>
