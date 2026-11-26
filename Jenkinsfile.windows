@@ -1,32 +1,194 @@
+
 pipeline {
-  agent any
-  options { timestamps() }
-  parameters {
-    booleanParam(name: 'RUN_REPLAY', defaultValue: false, description: 'Run the policy-replay experiment')
-    booleanParam(name: 'BUILD_DOCKER', defaultValue: false, description: 'Build the Docker image (needs Docker Desktop)')
-  }
-  stages {
-    stage('Checkout') { steps { checkout scm } }
-    stage('Check tools') {
-      steps { bat 'python --version' }
+    agent any
+
+    options {
+        timestamps()
     }
-    stage('Install') {
-      steps { bat 'python -m venv .venv && .venv\\Scripts\\python -m pip install -q -r requirements.txt' }
+
+    parameters {
+        booleanParam(
+            name: 'RUN_REPLAY',
+            defaultValue: false,
+            description: 'Run the policy-replay experiment'
+        )
+
+        booleanParam(
+            name: 'BUILD_DOCKER',
+            defaultValue: false,
+            description: 'Build the Docker image'
+        )
+
+        booleanParam(
+            name: 'RUN_DAST',
+            defaultValue: false,
+            description: 'Run OWASP ZAP dynamic security scan'
+        )
+
+        string(
+            name: 'DAST_TARGET_URL',
+            defaultValue: 'http://host.docker.internal:5000',
+            description: 'URL of the running AQI application'
+        )
     }
-    stage('Test') {
-      steps { bat '.venv\\Scripts\\python -m pytest -q --junitxml=test-results.xml' }
-      post { always { junit allowEmptyResults: true, testResults: 'test-results.xml' } }
+
+    stages {
+
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('Check tools') {
+            steps {
+                bat 'python --version'
+            }
+        }
+
+        stage('Install') {
+            steps {
+                bat '''
+                python -m venv .venv
+                .venv\\Scripts\\python -m pip install -q -r requirements.txt
+                .venv\\Scripts\\python -m pip install bandit pip-audit
+                '''
+            }
+        }
+
+        // SAST: Static Code Analysis
+        stage('SAST - Static Code Analysis') {
+            steps {
+                bat 'if not exist results mkdir results'
+
+                script {
+                    def status = bat(
+                        returnStatus: true,
+                        script: '.venv\\Scripts\\python -m bandit -r . -x .venv,tests,.git,results -f json -o results/bandit-report.json'
+                    )
+
+                    if (status != 0) {
+                        echo 'Bandit reported findings or encountered a scan error. Check the report.'
+                    }
+                }
+            }
+
+            post {
+                always {
+                    archiveArtifacts(
+                        artifacts: 'results/bandit-report.json',
+                        allowEmptyArchive: true
+                    )
+                }
+            }
+        }
+
+        // SCA: Dependency Vulnerability Scanning
+        stage('SCA - Dependency Vulnerability Scan') {
+            steps {
+                script {
+                    def status = bat(
+                        returnStatus: true,
+                        script: '.venv\\Scripts\\pip-audit.exe -r requirements.txt -f json -o results/pip-audit-report.json'
+                    )
+
+                    if (status != 0) {
+                        echo 'pip-audit reported vulnerabilities or encountered a scan error. Check the report.'
+                    }
+                }
+            }
+
+            post {
+                always {
+                    archiveArtifacts(
+                        artifacts: 'results/pip-audit-report.json',
+                        allowEmptyArchive: true
+                    )
+                }
+            }
+        }
+
+        stage('Test') {
+            steps {
+                bat '.venv\\Scripts\\python -m pytest -q --junitxml=test-results.xml'
+            }
+
+            post {
+                always {
+                    junit(
+                        allowEmptyResults: true,
+                        testResults: 'test-results.xml'
+                    )
+                }
+            }
+        }
+
+        stage('Replay experiment') {
+            when {
+                expression {
+                    params.RUN_REPLAY
+                }
+            }
+
+            steps {
+                bat '.venv\\Scripts\\python driftguard.py --out results'
+
+                archiveArtifacts(
+                    artifacts: 'results/**',
+                    fingerprint: true
+                )
+            }
+        }
+
+        stage('Build image') {
+            when {
+                expression {
+                    params.BUILD_DOCKER
+                }
+            }
+
+            steps {
+                bat 'docker build -t driftguard-aqi:%BUILD_NUMBER% .'
+            }
+        }
+
+        // DAST: Dynamic Application Security Testing
+        stage('DAST - OWASP ZAP') {
+            when {
+                expression {
+                    params.RUN_DAST
+                }
+            }
+
+            steps {
+                script {
+                    def status = bat(
+                        returnStatus: true,
+                        script: '''
+                        docker run --rm ^
+                          -v "%WORKSPACE%:/zap/wrk/:rw" ^
+                          zaproxy/zap-stable ^
+                          zap-baseline.py ^
+                          -t "%DAST_TARGET_URL%" ^
+                          -J zap-report.json
+                        '''
+                    )
+
+                    if (status != 0) {
+                        echo 'ZAP reported alerts or encountered a scan error. Check zap-report.json.'
+                    }
+                }
+            }
+
+            post {
+                always {
+                    archiveArtifacts(
+                        artifacts: 'zap-report.json',
+                        allowEmptyArchive: true
+                    )
+                }
+            }
+        }
     }
-    stage('Replay experiment') {
-      when { expression { params.RUN_REPLAY } }
-      steps {
-        bat '.venv\\Scripts\\python driftguard.py --out results'
-        archiveArtifacts artifacts: 'results/**', fingerprint: true
-      }
-    }
-    stage('Build image') {
-      when { expression { params.BUILD_DOCKER } }
-      steps { bat 'docker build -t driftguard-aqi:%BUILD_NUMBER% .' }
-    }
-  }
 }
+
