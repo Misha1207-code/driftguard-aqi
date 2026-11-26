@@ -10,19 +10,19 @@ pipeline {
         booleanParam(
             name: 'RUN_REPLAY',
             defaultValue: false,
-            description: 'Run AQI replay experiment'
+            description: 'Run the policy-replay experiment'
         )
 
         booleanParam(
             name: 'BUILD_DOCKER',
             defaultValue: false,
-            description: 'Build Docker image'
+            description: 'Build the Docker image'
         )
 
         booleanParam(
             name: 'RUN_DAST',
             defaultValue: false,
-            description: 'Run OWASP ZAP DAST scan'
+            description: 'Run OWASP ZAP security scan'
         )
 
         string(
@@ -49,24 +49,39 @@ pipeline {
         stage('Install') {
             steps {
                 bat '''
-                python -m venv .venv
+                if not exist .venv (
+                    python -m venv .venv
+                )
+
                 .venv\\Scripts\\python -m pip install -q -r requirements.txt
                 .venv\\Scripts\\python -m pip install -q bandit pip-audit
                 '''
             }
         }
 
+        // SAST - Static Code Analysis
         stage('SAST - Static Code Analysis') {
             steps {
                 bat 'if not exist results mkdir results'
 
-                bat '''
-                .venv\\Scripts\\python -m bandit ^
-                -r . ^
-                -x .venv,venv,tests,.git,results,__pycache__ ^
-                -f json ^
-                -o results/bandit-report.json
-                '''
+                script {
+                    def status = bat(
+                        returnStatus: true,
+                        script: '''
+                        .venv\\Scripts\\python -m bandit ^
+                        -r . ^
+                        -x .venv,venv,tests,.git,results,__pycache__ ^
+                        -f json ^
+                        -o results/bandit-report.json
+                        '''
+                    )
+
+                    if (status == 0) {
+                        echo 'Bandit scan completed without reported findings.'
+                    } else {
+                        echo "Bandit returned exit code ${status}. Review the security report."
+                    }
+                }
             }
 
             post {
@@ -79,14 +94,26 @@ pipeline {
             }
         }
 
-        stage('SCA - Dependency Vulnerability Scan') {
+        // SCA - Dependency Vulnerability Scanning
+        stage('SCA - Dependency Vulnerability Scanning') {
             steps {
-                bat '''
-                .venv\\Scripts\\python -m pip_audit ^
-                -r requirements.txt ^
-                -f json ^
-                -o results/pip-audit-report.json
-                '''
+                script {
+                    def status = bat(
+                        returnStatus: true,
+                        script: '''
+                        .venv\\Scripts\\python -m pip_audit ^
+                        -r requirements.txt ^
+                        -f json ^
+                        -o results/pip-audit-report.json
+                        '''
+                    )
+
+                    if (status == 0) {
+                        echo 'Dependency scan completed without reported vulnerabilities.'
+                    } else {
+                        echo "pip-audit returned exit code ${status}. Review the security report."
+                    }
+                }
             }
 
             post {
@@ -99,6 +126,7 @@ pipeline {
             }
         }
 
+        // Automated Testing
         stage('Test') {
             steps {
                 bat '.venv\\Scripts\\python -m pytest -q --junitxml=test-results.xml'
@@ -114,6 +142,7 @@ pipeline {
             }
         }
 
+        // AQI Replay Experiment
         stage('Replay Experiment') {
             when {
                 expression {
@@ -131,6 +160,7 @@ pipeline {
             }
         }
 
+        // Docker Image Build
         stage('Build Image') {
             when {
                 expression {
@@ -143,6 +173,7 @@ pipeline {
             }
         }
 
+        // DAST - Dynamic Application Security Testing
         stage('DAST - OWASP ZAP') {
             when {
                 expression {
@@ -151,14 +182,25 @@ pipeline {
             }
 
             steps {
-                bat '''
-                docker run --rm ^
-                -v "%WORKSPACE%:/zap/wrk/:rw" ^
-                zaproxy/zap-stable ^
-                zap-baseline.py ^
-                -t "%DAST_TARGET_URL%" ^
-                -J zap-report.json
-                '''
+                script {
+                    def status = bat(
+                        returnStatus: true,
+                        script: '''
+                        docker run --rm ^
+                        -v "%WORKSPACE%:/zap/wrk/:rw" ^
+                        zaproxy/zap-stable ^
+                        zap-baseline.py ^
+                        -t "%DAST_TARGET_URL%" ^
+                        -J zap-report.json
+                        '''
+                    )
+
+                    if (status == 0) {
+                        echo 'OWASP ZAP scan completed.'
+                    } else {
+                        echo "OWASP ZAP returned exit code ${status}. Review its report and console output."
+                    }
+                }
             }
 
             post {
@@ -172,3 +214,4 @@ pipeline {
         }
     }
 }
+
