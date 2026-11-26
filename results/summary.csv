@@ -1,0 +1,9 @@
+Policy,Retrains,Promoted,Unneeded,RMSE,MAE
+Never,0,0,0,26.63,20.51
+Weekly,150,150,82,22.06,16.64
+Monthly,37,37,16,22.23,16.84
+12-month,2,2,1,21.66,16.42
+Drift-only,37,37,14,22.87,17.23
+Error-only,5,5,2,23.6,18.15
+DriftGuard (no gate),4,4,3,26.91,20.93
+DriftGuard,8,4,4,22.1,16.83
