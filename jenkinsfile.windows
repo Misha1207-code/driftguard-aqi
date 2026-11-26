@@ -1,0 +1,32 @@
+pipeline {
+  agent any
+  options { timestamps() }
+  parameters {
+    booleanParam(name: 'RUN_REPLAY', defaultValue: false, description: 'Run the policy-replay experiment')
+    booleanParam(name: 'BUILD_DOCKER', defaultValue: false, description: 'Build the Docker image (needs Docker Desktop)')
+  }
+  stages {
+    stage('Checkout') { steps { checkout scm } }
+    stage('Check tools') {
+      steps { bat 'python --version' }
+    }
+    stage('Install') {
+      steps { bat 'python -m venv .venv && .venv\\Scripts\\python -m pip install -q -r requirements.txt' }
+    }
+    stage('Test') {
+      steps { bat '.venv\\Scripts\\python -m pytest -q --junitxml=test-results.xml' }
+      post { always { junit allowEmptyResults: true, testResults: 'test-results.xml' } }
+    }
+    stage('Replay experiment') {
+      when { expression { params.RUN_REPLAY } }
+      steps {
+        bat '.venv\\Scripts\\python driftguard.py --out results'
+        archiveArtifacts artifacts: 'results/**', fingerprint: true
+      }
+    }
+    stage('Build image') {
+      when { expression { params.BUILD_DOCKER } }
+      steps { bat 'docker build -t driftguard-aqi:%BUILD_NUMBER% .' }
+    }
+  }
+}
