@@ -4,14 +4,28 @@ import threading
 import time
 
 from fastapi import FastAPI, HTTPException, Response
-from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, generate_latest
 
 from stream import Stream
+import driftguard as dg
 
 app = FastAPI(title="DriftGuard-AQI")
-S, lock = Stream(), threading.Lock()
+def make_stream():
+    """Synthetic demo by default; set DATA_CSV (and optionally CFG_JSON) to serve real data."""
+    path = os.getenv("DATA_CSV")
+    if not path:
+        return Stream()
+    import json
+    import pandas as pd
+    cols = [c for c in pd.read_csv(path, nrows=1).columns if c not in ("date", "aqi")]
+    over = json.load(open(os.environ["CFG_JSON"])) if os.getenv("CFG_JSON") else None
+    if over and "w" in over:
+        over["w"] = tuple(over["w"])
+    return Stream(dg.load_csv(path, "date", "aqi", cols), over)
+
+
+S, lock = make_stream(), threading.Lock()
 
 GAUGES = {k: Gauge(f"driftguard_{k}", d) for k, d in {
     "drift_score": "Data drift vs same weeks last year (0-1)",
@@ -58,11 +72,6 @@ def start_auto():
 
 class PredictIn(BaseModel):
     features: dict
-
-
-@app.get("/", include_in_schema=False)
-def home():
-    return FileResponse(os.path.join(os.path.dirname(os.path.abspath(__file__)), "dashboard.html"))
 
 
 @app.get("/health")
