@@ -9,14 +9,14 @@ Run:  python driftguard.py                      (synthetic demo data)
              --features pm25,pm10,no2,temp,humidity,wind
 """
 import argparse
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import HistGradientBoostingRegressor as HGB
 
-POLICIES = ["Never", "Weekly", "Monthly", "12-month", "Drift-only",
-            "Error-only", "DriftGuard (no gate)", "DriftGuard"]
+POLICIES = ["Never", "Weekly", "Biweekly", "Monthly", "12-month", "Drift-only",
+            "Error-only", "DriftGuard (no gate)", "DriftGuard (no season)", "DriftGuard"]
 
 
 @dataclass
@@ -29,6 +29,9 @@ class Cfg:
     margin: float = 0.02    # challenger must beat champion MAE by this fraction
     tau: float = 0.35       # DriftGuard retrain-score threshold
     cooldown: int = 4       # weeks between retrain attempts
+    review: int = 1         # review cadence in weeks: 2 = biweekly, 4 = monthly. Adaptive policies only act at reviews
+    fade: bool = True       # seasonal discount fades as measured error rises: season can excuse expected drift, never proven damage
+    season: bool = True     # False = ablation: drift measured against training data, no seasonal discount
     w: tuple = (0.35, 0.35, 0.20, 0.30)  # drift, error, interval, seasonal
     drift_thr: float = 0.5  # drift-only baseline threshold (normalised PSI)
     err_thr: float = 0.5    # error-only baseline threshold
@@ -86,14 +89,27 @@ def build_features(df, raw):
 
 
 # ------------------------------------------------------------- monitoring
-def psi(ref, cur, bins=5):
+def psi(ref, cur, bins=5, autocorr=3.0):
+    """Population Stability Index, corrected for small-sample bias.
+
+    Raw PSI between a short window and a reference is biased upwards by about
+    (bins-1)*(1/n_ref + 1/n_cur) even when nothing changed; daily AQI is autocorrelated,
+    so the effective sample is n/autocorr. Without the correction, a 56-day window looks
+    'drifted' almost every week and the drift signal saturates at 1.
+    """
+    ref, cur = np.asarray(ref, float), np.asarray(cur, float)
+    ref, cur = ref[~np.isnan(ref)], cur[~np.isnan(cur)]
+    if len(ref) < 20 or len(cur) < 5:
+        return 0.0
     q = np.unique(np.quantile(ref, np.linspace(0, 1, bins + 1)))
     if len(q) < 3:
         return 0.0
     q[0], q[-1] = -np.inf, np.inf
     r = np.clip(np.histogram(ref, q)[0] / len(ref), 1e-4, None)
     c = np.clip(np.histogram(cur, q)[0] / len(cur), 1e-4, None)
-    return float(np.sum((c - r) * np.log(c / r)))
+    raw = float(np.sum((c - r) * np.log(c / r)))
+    bias = (len(q) - 2) * (autocorr / len(ref) + autocorr / len(cur))
+    return max(0.0, raw - bias)
 
 
 def norm_psi(ref, cur):
@@ -134,7 +150,9 @@ def signals(F, champ, pred, width, since, known, e, cfg, drift_cols):
     cur = F[drift_cols].iloc[max(0, e - 56):e].values
     rp = lambda r, c: float(np.mean([psi(r[:, j], c[:, j]) for j in range(r.shape[1])]))
     raw_ref = rp(champ.ref, cur)
-    if e - 56 - 365 >= 0:       # drift beyond what the same weeks looked like last year
+    if not cfg.season:          # ablation: plain drift vs the training window, no seasonal discount
+        D, S = min(1.0, raw_ref / 0.25), 0.0
+    elif e - 56 - 365 >= 0:     # drift beyond what the same weeks looked like last year
         prev = F[drift_cols].iloc[e - 56 - 365:e - 365].values
         raw_adj = rp(prev, cur)
         D = min(1.0, raw_adj / 0.25)                       # label-free
@@ -152,29 +170,34 @@ def signals(F, champ, pred, width, since, known, e, cfg, drift_cols):
         if len(wi) >= 7:
             U = clip((wi.mean() / champ.base_width - 1) / 0.5)
     w1, w2, w3, w4 = cfg.w
-    score = max(0.0, w1 * D + w2 * E + w3 * U - w4 * S)
+    score = max(0.0, w1 * D + w2 * E + w3 * U - w4 * S * ((1 - E) if cfg.fade else 1.0))
     return dict(D=D, E=E, U=U, S=S, score=score)
 
 
 def decide(name, sg, i, last, cfg):
     cool = (i - last) >= cfg.cooldown
+    at_review = (i + 1) % cfg.review == 0
     if name == "Never":
         return False, "never retrains"
     if name == "Weekly":
         return True, "weekly schedule"
+    if name == "Biweekly":
+        return ((i + 1) % 2 == 0), "biweekly schedule"
     if name == "Monthly":
         return (i > 0 and i % 4 == 0), "monthly schedule"
     if name == "12-month":
         return (i > 0 and i % 52 == 0), "12-month schedule"
     if name == "Drift-only":
-        return (sg["D"] >= cfg.drift_thr and cool), f"drift {sg['D']:.2f} vs {cfg.drift_thr}"
+        return (sg["D"] >= cfg.drift_thr and cool and at_review), f"drift {sg['D']:.2f} vs {cfg.drift_thr}"
     if name == "Error-only":
-        return (sg["E"] >= cfg.err_thr and cool), f"error {sg['E']:.2f} vs {cfg.err_thr}"
+        return (sg["E"] >= cfg.err_thr and cool and at_review), f"error {sg['E']:.2f} vs {cfg.err_thr}"
     parts = (f"drift {sg['D']:.2f}, error {sg['E']:.2f}, interval {sg['U']:.2f}, "
              f"seasonal match {sg['S']:.2f}")
     if sg["score"] < cfg.tau:
         note = " (seasonal match discounted drift)" if sg["S"] > 0.5 and sg["D"] > 0.3 else ""
         return False, f"skip: score {sg['score']:.2f} < {cfg.tau}; {parts}{note}"
+    if not at_review:
+        return False, f"skip: above threshold, waiting for next review; score {sg['score']:.2f}"
     if not cool:
         return False, f"skip: cooldown; score {sg['score']:.2f}"
     return True, f"retrain: score {sg['score']:.2f} >= {cfg.tau}; {parts}"
@@ -183,7 +206,9 @@ def decide(name, sg, i, last, cfg):
 # ----------------------------------------------------------------- replay
 def run_policy(F, name, cfg, feats, drift_cols):
     n, y = len(F), F["y"].values
-    gated = name == "DriftGuard"
+    if name == "DriftGuard (no season)":
+        cfg = replace(cfg, season=False)
+    gated = name in ("DriftGuard", "DriftGuard (no season)")
     intervals = name.startswith("DriftGuard")
     mk = lambda hi: Bundle(F, hi - cfg.win, hi, cfg, feats, drift_cols, intervals)
     champ = mk(cfg.start - cfg.delay)
@@ -240,7 +265,7 @@ def plot(weekly, log, events, path):
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     fig, ax = plt.subplots(figsize=(11, 5))
-    for p in ["Never", "Monthly", "Drift-only", "DriftGuard"]:
+    for p in [q for q in ["Never", "Biweekly", "Monthly", "Drift-only", "DriftGuard"] if q in weekly]:
         w = weekly[p]
         ax.plot(w.date, w.rmse.rolling(4, min_periods=1).mean(), label=p,
                 lw=2.5 if p == "DriftGuard" else 1.3)
